@@ -1,223 +1,115 @@
-import streamlit as st
+from pathlib import Path
+
 import pandas as pd
-import os
+import plotly.express as px
+import streamlit as st
 
 
-# =====================
-# 页面设置
-# =====================
+st.set_page_config(page_title="电商用户行为分析", page_icon="🛒", layout="wide")
 
-st.set_page_config(
-    page_title="电商用户行为分析系统",
-    layout="wide"
-)
+BASE_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = BASE_DIR / "data"
 
 
-# =====================
-# 获取项目根目录
-# =====================
+@st.cache_data
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    behavior = pd.read_csv(DATA_DIR / "behavior_count.csv")
+    top_items = pd.read_csv(DATA_DIR / "top10_items.csv")
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    )
-)
+    required_behavior_columns = {"behavior", "count"}
+    required_item_columns = {"item_id", "pv_count"}
+    if not required_behavior_columns.issubset(behavior.columns):
+        raise ValueError("behavior_count.csv 必须包含 behavior 和 count 两列。")
+    if not required_item_columns.issubset(top_items.columns):
+        raise ValueError("top10_items.csv 必须包含 item_id 和 pv_count 两列。")
 
-
-
-DATA_DIR = os.path.join(
-    BASE_DIR,
-    "data"
-)
-
-
-# =====================
-# 页面标题
-# =====================
-
-st.title("🛒 电商用户行为分析系统")
-
-st.write(
-    "基于淘宝用户行为数据的数据分析平台"
-)
+    behavior["count"] = pd.to_numeric(behavior["count"], errors="raise")
+    top_items["pv_count"] = pd.to_numeric(top_items["pv_count"], errors="raise")
+    return behavior, top_items
 
 
-# =====================
-# 加载用户画像
-# =====================
-
-user_profile_path = os.path.join(
-    DATA_DIR,
-    "user_profile.csv"
-)
+def format_number(value: int | float) -> str:
+    return f"{value:,.0f}"
 
 
-if os.path.exists(user_profile_path):
+st.title("🛒 电商用户行为分析")
+st.caption("基于用户行为汇总数据，快速查看转化路径与热门商品表现。")
 
-    user_profile = pd.read_csv(
-        user_profile_path
-    )
-
-else:
-
-    st.error(
-        "没有找到 user_profile.csv，请检查 data 文件夹"
-    )
-
+try:
+    behavior_data, top_items_data = load_data()
+except (FileNotFoundError, ValueError, pd.errors.ParserError) as error:
+    st.error(f"数据加载失败：{error}")
     st.stop()
 
+behavior_labels = {"pv": "浏览", "fav": "收藏", "cart": "加购", "buy": "购买"}
+behavior_data["行为"] = behavior_data["behavior"].map(behavior_labels).fillna(behavior_data["behavior"])
+counts = behavior_data.set_index("behavior")["count"]
+page_views = int(counts.get("pv", 0))
+purchases = int(counts.get("buy", 0))
+carts = int(counts.get("cart", 0))
+conversion_rate = purchases / page_views if page_views else 0
+cart_conversion_rate = purchases / carts if carts else 0
 
+metric_columns = st.columns(4)
+metric_columns[0].metric("总行为次数", format_number(behavior_data["count"].sum()))
+metric_columns[1].metric("浏览次数", format_number(page_views))
+metric_columns[2].metric("购买次数", format_number(purchases))
+metric_columns[3].metric("浏览至购买转化率", f"{conversion_rate:.2%}")
 
-# =====================
-# 用户指标
-# =====================
-
-st.subheader("📊 用户概况")
-
-
-col1, col2, col3 = st.columns(3)
-
-
-with col1:
-
-    st.metric(
-        "用户总数",
-        len(user_profile)
+left_column, right_column = st.columns(2)
+with left_column:
+    st.subheader("行为分布")
+    behavior_chart = px.bar(
+        behavior_data,
+        x="行为",
+        y="count",
+        color="行为",
+        text_auto=",.0f",
+        labels={"count": "次数", "行为": "行为类型"},
     )
+    behavior_chart.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
+    st.plotly_chart(behavior_chart, use_container_width=True)
 
-
-with col2:
-
-    high_value = (
-        user_profile['level']
-        == "高价值用户"
-    ).sum()
-
-
-    st.metric(
-        "高价值用户",
-        high_value
+with right_column:
+    st.subheader("购买转化漏斗")
+    funnel_order = ["pv", "fav", "cart", "buy"]
+    funnel_data = pd.DataFrame(
+        {
+            "行为": [behavior_labels[item] for item in funnel_order if item in counts],
+            "次数": [int(counts[item]) for item in funnel_order if item in counts],
+        }
     )
+    funnel_chart = px.funnel(funnel_data, y="行为", x="次数", text="次数")
+    funnel_chart.update_layout(margin=dict(t=20, b=20, l=20, r=20))
+    st.plotly_chart(funnel_chart, use_container_width=True)
 
+st.subheader("转化洞察")
+insight_columns = st.columns(3)
+insight_columns[0].metric("加购至购买转化率", f"{cart_conversion_rate:.2%}")
+insight_columns[1].metric("加购行为占比", f"{carts / page_views:.2%}" if page_views else "暂无数据")
+insight_columns[2].metric("收藏行为占比", f"{int(counts.get('fav', 0)) / page_views:.2%}" if page_views else "暂无数据")
 
-with col3:
-
-    potential = (
-        user_profile['level']
-        == "潜力用户"
-    ).sum()
-
-
-    st.metric(
-        "潜力用户",
-        potential
-    )
-
-
-
-# =====================
-# 用户价值分布
-# =====================
-
-st.subheader(
-    "👥 用户价值分布"
+st.subheader("热门商品 Top 10")
+top_items_display = top_items_data.sort_values("pv_count", ascending=False).copy()
+top_items_display["item_id"] = top_items_display["item_id"].astype(str)
+items_chart = px.bar(
+    top_items_display,
+    x="pv_count",
+    y="item_id",
+    orientation="h",
+    text_auto=",.0f",
+    labels={"pv_count": "浏览次数", "item_id": "商品 ID"},
 )
+items_chart.update_layout(yaxis={"categoryorder": "total ascending"}, margin=dict(t=20, b=20, l=20, r=20))
+st.plotly_chart(items_chart, use_container_width=True)
 
+with st.expander("查看原始汇总数据"):
+    st.dataframe(behavior_data[["行为", "count"]], use_container_width=True, hide_index=True)
+    st.dataframe(top_items_display, use_container_width=True, hide_index=True)
 
-level_count = (
-    user_profile['level']
-    .value_counts()
-)
-
-
-st.bar_chart(
-    level_count
-)
-
-
-
-# =====================
-# 热门商品
-# =====================
-
-st.subheader(
-    "🔥 热门商品TOP10"
-)
-
-
-top_items_path = os.path.join(
-    DATA_DIR,
-    "top10_items.csv"
-)
-
-
-
-if os.path.exists(top_items_path):
-
-    top_items = pd.read_csv(
-        top_items_path
-    )
-
-
-    st.bar_chart(
-        top_items
-    )
-
-
-else:
-
-    st.warning(
-        "暂未找到 top10_items.csv"
-    )
-
-
-
-# =====================
-# 用户画像展示
-# =====================
-
-st.subheader(
-    "用户画像数据预览"
-)
-
-
-st.dataframe(
-    user_profile.head(20)
-)# =====================
-# 用户行为分析
-# =====================
-
-st.subheader(
-    "📈 用户行为分布"
-)
-
-
-behavior_count = pd.read_csv(
-    os.path.join(
-        DATA_DIR,
-        "behavior_count.csv"
-    )
-)
-
-
-st.bar_chart(
-    behavior_count.set_index("behavior")
-)
-st.subheader(
-    "🛒 购买转化率"
-)
-
-
-pv_count = 89716263
-buy_count = 2015839
-
-
-conversion_rate = (
-    buy_count / pv_count * 100
-)
-
-
-st.metric(
-    "浏览到购买转化率",
-    f"{conversion_rate:.2f}%"
+st.download_button(
+    "下载热门商品数据",
+    data=top_items_display.to_csv(index=False).encode("utf-8-sig"),
+    file_name="top10_items.csv",
+    mime="text/csv",
 )
